@@ -39,7 +39,7 @@ x = cell.x
 n = FacetNormal(mesh)
 
 # Define function spaces
-k = 1
+k = 2
 Vs = [VectorFunctionSpace(mesh, "DG", ks) for ks in [1,2,3]]
 V = Vs[k-1]
 V_cg = VectorFunctionSpace(mesh, "CG", 3)
@@ -115,7 +115,16 @@ f.assign(project(f0, V_cg))
 
 A_u = assemble(a_h)
 b_u = assemble(b_h)
-solve(A_u, uh.vector(), b_u, "lu")
+if 0:
+    solve(A_u, uh.vector(), b_u,
+          "gmres",
+          solver_parameters={
+            'relative_tolerance': 1e-15,
+            'monitor_convergence': True,
+            'gmres': { 'restart': 300 },
+            })
+else:
+    solve(A_u, uh.vector(), b_u, "lu")
 
 ue = uh-u0
 e = sqrt(assemble(dot(ue,ue)*dx))
@@ -141,7 +150,7 @@ while t < T1:
 
 
 # TODO: Postprocessing
-if 1:
+if 0:
     plot(uh)
     plot(ue)
     #plot(ph)
