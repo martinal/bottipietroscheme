@@ -20,13 +20,12 @@ if 1:
         kwargs['form_compiler_parameters'] = ffc_opt
         return dolfin.assemble(*args, **kwargs)
 
-
 # Parameters
 d = 2
-m = int(sys.argv[1])
+m = int(sys.argv[1]) if len(sys.argv) == 2 else 16
 k = 1
 dtvalue = 1e-1
-steps = 50
+steps = 200
 T0, T1 = 0.0, dtvalue*(steps+0.1)
 
 yscale = 10
@@ -112,31 +111,32 @@ ub1 = as_vector((0, x[0]*(1.0-x[0]))) # Parabolic profile in y direction
 
 # Attach boundary indicators to boundary integration measure
 dsb = ds[boundaries]
+b_h = -dot(f,v)*dx                       # Forcing term
+b_h += dti*dot(uhp,v)*dx                 # Time derivative term
+b_h -= dot(v, 2*grad(ph) - grad(php))*dx # Pressure coupling term
+
 pen = eta * k**2 / h_T
 if 1: # FIXME: What is the right formulation for this term?
-    b_h = pen*dot(ub0,v)*dsb(0) \
-        + pen*dot(ub1,v)*dsb(1) 
-        + pen*dot(ub2,v)*dsb(2)
+    b_h += pen*dot(ub0,v)*dsb(0)
+    b_h += pen*dot(ub1,v)*dsb(1)
+    b_h += pen*dot(ub2,v)*dsb(2)
 else:
-    b_h = pen*dot(ub0,n)*dot(v,n)*dsb(0) \
-        + pen*dot(ub1,n)*dot(v,n)*dsb(1) \
-        + pen*dot(ub2,n)*dot(v,n)*dsb(2)
+    b_h += pen*dot(ub0,n)*dot(v,n)*dsb(0)
+    b_h += pen*dot(ub1,n)*dot(v,n)*dsb(1)
+    b_h += pen*dot(ub2,n)*dot(v,n)*dsb(2)
 
 b_h += dot(grad(v)*n, ub0)*dsb(0) # FIXME: Plus or minus? 
 b_h += dot(grad(v)*n, ub1)*dsb(1)
 b_h += dot(grad(v)*n, ub2)*dsb(2)
-b_h -= dot(f,v)*dx                       # Forcing term
-b_h -= dot(v, 2*grad(ph) - grad(php))*dx # Pressure coupling term
-b_h += dti*dot(uhp,v)*dx                 # Time derivative term
 
 # Pressure Poisson equation
 a_p = dot(grad(p),grad(q))*dx
-b_h_p  = -dti*div(uh)*q*dx
+b_h_p  = dot(grad(php), grad(q))*dx
+b_h_p -= dti*div(uh)*q*dx
 b_h_p -= dti('+')*dot(np, jump(uh))*avg(q)*dS
-b_h_p += dti*dot(n, uh-ub0)*q*dsb(0) \
-      +  dti*dot(n, uh-ub1)*q*dsb(1) \
-      +  dti*dot(n, uh-ub2)*q*dsb(2)
-b_h_p += dot(grad(php), grad(q))*dx
+b_h_p += dti*dot(n, uh-ub0)*q*dsb(0)
+b_h_p += dti*dot(n, uh-ub1)*q*dsb(1)
+b_h_p += dti*dot(n, uh-ub2)*q*dsb(2)
 
 # BC for pressure, zero on outlet boundary
 pbc = DirichletBC(P, 0, Outlet())
