@@ -24,7 +24,7 @@ if 1:
 d = 2
 m = int(sys.argv[1]) if len(sys.argv) == 2 else 16
 k = 1
-dtvalue = 1e-2
+dtvalue = 1e-1
 steps = 20
 T0, T1 = 0.0, dtvalue*(steps+0.1)
 
@@ -89,26 +89,38 @@ ub0, ub1, ub2 = uz, uz, uz # Zero as default
 ub1 = as_vector((0, x[0]*(1.0-x[0]))) # Parabolic profile in y direction
 #ub2 = as_vector((0, x[0]*(1.0-x[0])))
 
-# FIXME: Figure out how to implement this in dolfin
-h_T = CellSize(mesh)
-h_dT = FacetArea(mesh)
-h_p = h_T('+') / h_dT('+')
-h_m = h_T('-') / h_dT('-')
-h_F = conditional(lt(h_p, h_m), h_p, h_m) # h_F = h_p < h_m ? h_p: h_m
-
-h_F = avg(h_T)
+# Define penalty terms
 nm = n('-')
 np = n('+')
+h_T = CellSize(mesh)
+h_dT = FacetArea(mesh)
+
+# FIXME: Remove when dolfin gets a fix for the facetarea bug
+h_dT = 0.5/m**2 # Hardcoded area of 1.0/16 length perfect triangle
+
+h_F_ext = h_T / h_dT
+if 1:
+    h_p = h_T('+')
+    h_m = h_T('-')
+    h_T_min = conditional(lt(h_p, h_m), h_p, h_m)
+    # h_T_min = h_p < h_m ? h_p: h_m
+    h_F_int = h_T_min / h_dT #('+')
+else:
+    h_F_int = avg(h_T)
+
+# Penalty term
+pen_ext = eta * k**2 / h_F_ext
+pen_int = eta('+') * k**2 / h_F_int
 
 # Free indices for use with implicit summation
 i, j = indices(2)
 
 # Left hand side for u equations
 a_u  = inner(grad(u), grad(v))*dx
-a_u += ( (eta('+')*k**2/h_F)*dot(jump(u),jump(v))
+a_u += ( pen_int*dot(jump(u),jump(v))
         - dot( avg(grad(u))*np, jump(v) )
         - dot( avg(grad(v))*np, jump(u) ) ) * dS
-a_u += ( (eta*k**2/h_T)*dot(u,v)
+a_u += ( pen_ext*dot(u,v)
         - dot(grad(u)*n, v)
         - dot(grad(v)*n, u) ) * ds
 a_u += dti*dot(u, v)*dx # Time derivative term
@@ -118,15 +130,14 @@ b_u = -dot(f,v)*dx                       # Forcing term
 b_u += dti*dot(uhp,v)*dx                 # Time derivative term
 b_u -= dot(v, 2*grad(ph) - grad(php))*dx # Pressure coupling term
 
-pen = eta * k**2 / h_T
-if 1: # FIXME: What is the right formulation for this term?
-    b_u += pen*dot(ub0,v)*dsb(0)
-    b_u += pen*dot(ub1,v)*dsb(1)
-    b_u += pen*dot(ub2,v)*dsb(2)
+if 0: # FIXME: What is the right formulation for this term?
+    b_u += pen_ext*dot(ub0,v)*dsb(0)
+    b_u += pen_ext*dot(ub1,v)*dsb(1)
+    b_u += pen_ext*dot(ub2,v)*dsb(2)
 else:
-    b_u += pen*dot(ub0,n)*dot(v,n)*dsb(0)
-    b_u += pen*dot(ub1,n)*dot(v,n)*dsb(1)
-    b_u += pen*dot(ub2,n)*dot(v,n)*dsb(2)
+    b_u += pen_ext*dot(ub0,n)*dot(v,n)*dsb(0)
+    b_u += pen_ext*dot(ub1,n)*dot(v,n)*dsb(1)
+    b_u += pen_ext*dot(ub2,n)*dot(v,n)*dsb(2)
 
 b_u -= dot(grad(v)*n, ub0)*dsb(0)
 b_u -= dot(grad(v)*n, ub1)*dsb(1)
@@ -173,7 +184,7 @@ tn = 0
 while t < T1:
     # Solve advection-diffusion equations
     bh_u = assemble(b_u)
-    if 0:
+    if 1:
         solve(A_u, uh.vector(), bh_u, "lu")
     else:
         solve(A_u, uh.vector(), bh_u,
