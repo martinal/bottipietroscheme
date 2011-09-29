@@ -24,7 +24,7 @@ if 1:
 # Parameters
 d = 2
 m = int(sys.argv[1])
-k = 1
+k = 2
 dtvalue = 1e-1
 T0, T1 = 0.0, dtvalue*50.1 # Just a few steps for now
 
@@ -121,14 +121,22 @@ a_h += ((eta*k**2/h_T)*dot(u,v)
 
 # Right hand side for u equations
 ub = as_vector((0, x[0]*(1.0-x[0])))
-ub2 = -ub
+ub2 = as_vector((0, x[0]*(1.0-x[0])))
 ub0 = as_vector((0,0))
 dsb = ds[boundaries]
-b_h = (eta*k**2/h_T)*dot(ub,v)*dsb(1) + (eta*k**2/h_T)*dot(ub0,v)*dsb(0)
+if 1:
+    b_h = (eta*k**2/h_T)*dot(ub,v)*dsb(1) \
+        + (eta*k**2/h_T)*dot(ub0,v)*dsb(0) 
+#        + (eta*k**2/h_T)*dot(ub2,v)*dsb(2)
+else:
+    b_h = (eta*k**2/h_T)*dot(ub,n)*dot(v,n)*dsb(1) \
+        + (eta*k**2/h_T)*dot(ub0,n)*dot(v,n)*dsb(0) 
+#        + (eta*k**2/h_T)*dot(ub2,n)*dot(v,n)*dsb(2)
+
 b_h -= dot(grad(v)*n, ub)*dsb(1) \
-     + dot(grad(v)*n, ub0)*dsb(0) \
-     + dot(grad(v)*n, ub2)*dsb(2)
-b_h -= dot(f,v)*dx
+     + dot(grad(v)*n, ub0)*dsb(0) 
+#     + dot(grad(v)*n, ub2)*dsb(2)
+#b_h -= dot(f,v)*dx
 b_h -= dot(v, 2*grad(ph) - grad(php))*dx # pressure coupling
 
 # Add time derivatives to forms
@@ -153,13 +161,13 @@ pbc = DirichletBC(P, 0, Outlet())
 
 # Assemble matrices
 if 0:
-    u0 = as_vector((x[0]**2, x[1]**2))
+    u0 = as_vector(0, 0)
     #ub.assign(project(UB(), V))
 
-    f0 = as_vector((2, 2))
+    f0 = as_vector(0, 0)
     f.assign(project(f0, V_cg))
 
-#f.assign(project(div(grad(u0)), V_cg)) # BUG in UFL, listtensor assumption failed
+#f.assign(project(div(grad(as_vector(0, 0))), V_cg)) # BUG in UFL, listtensor assumption failed
 
 A_u = assemble(a_h)
 A_p = assemble(a_h_p)
@@ -178,7 +186,7 @@ tn = 0
 while t < T1:
     # Solve advection-diffusion equations
     b_u = assemble(b_h) # pn, pn-1
-    if 1:
+    if 0:
         solve(A_u, uh.vector(), b_u, "lu")
     else:
         solve(A_u, uh.vector(), b_u,
@@ -186,7 +194,7 @@ while t < T1:
               solver_parameters={
                 'relative_tolerance': 1e-15,
                 'monitor_convergence': True,
-                'gmres': { 'restart': 300 },
+                'gmres': { 'restart': 100 },
                 })
 
     if 0:
@@ -204,7 +212,7 @@ while t < T1:
     # Solve pressure equation
     php.assign(ph)
     b_p = assemble(b_h_p)
-    #pbc.apply(A_p, b_p)
+    pbc.apply(A_p, b_p)
     solve(A_p, ph.vector(), b_p) # -> pn+1
 
     uchange = assemble(dot((uh-uhp),(uh-uhp))*dx)
