@@ -24,21 +24,23 @@ if 1:
 # Parameters
 d = 2
 m = int(sys.argv[1])
-k = 2
+k = 1
 dtvalue = 1e-1
-T0, T1 = 0.0, dtvalue*50.1 # Just a few steps for now
+steps = 50
+T0, T1 = 0.0, dtvalue*(steps+0.1)
 
 yscale = 10
+aspectratio = 1.0
 
 # Define mesh
 if d == 2:
-    mesh = UnitSquare(m, int(m*yscale/5))
+    mesh = UnitSquare(m, int(m*yscale/aspectratio))
     mesh.coordinates()[:,1] *= yscale
 elif d == 3:
     mesh = UnitCube(m, m, m)
-eps = 0.1/m
 
 # Define subdomains
+eps = 0.01 / m
 class Inlet(SubDomain):
     def inside(self, x, on_boundary):
         return x[1] < eps and on_boundary
@@ -51,36 +53,16 @@ boundaries.set_all(0)
 Inlet().mark(boundaries, 1)
 Outlet().mark(boundaries, 2)
 
-if 0:
-    ba = boundaries.array()
-    from collections import defaultdict
-    dd = defaultdict(int)
-    for i in range(ba.shape[0]):
-        print i, ba[i]
-        dd[ba[i]] += 1
-    print dd
-    sys.exit(0)
-
 # Get UFL geometric quantities
 cell = mesh.ufl_cell()
 x = cell.x
 n = FacetNormal(mesh)
 
 # Define function spaces
-Vs = [VectorFunctionSpace(mesh, "DG", ks) for ks in [1,2,3]]
-V = Vs[k-1]
-V_cg = VectorFunctionSpace(mesh, "CG", 3)
+V = VectorFunctionSpace(mesh, "DG", k)
+Vf = VectorFunctionSpace(mesh, "CG", 3)
 P = FunctionSpace(mesh, "CG", 1)
 P2 = FunctionSpace(mesh, "CG", 2)
-
-# Define boundary conditions
-#class UB(Expression):
-#    def eval(self, values, x):
-#        values[0] = 0.0
-#        values[1] = 1.0 if x[1] < DOLFIN_EPS else 0.0
-
-#ub = Expression(("0.0", "x[1] < DOLFIN_EPS ? 1.0: 0.0"),
-#                element=VectorElement("CG", cell, 1))
 
 # Define functions
 uh = Function(V)
@@ -91,11 +73,10 @@ u = TrialFunction(V)
 v = TestFunction(V)
 p = TrialFunction(P)
 q = TestFunction(P)
-nu = Constant(1.0, cell=cell) # TODO: Value?
 eta = Constant(5.0, cell=cell)
-f = Function(V_cg)
-#g = Function(P2)
+f = Function(Vf)
 dt = Constant(dtvalue, cell=cell)
+dti = 1.0 / dt
 
 # TODO: Define forms
 h_T = CellSize(mesh)
@@ -108,73 +89,76 @@ h_F = avg(h_T)
 nm = n('-')
 np = n('+')
 
+# Free indices for use with implicit summation
 i, j = indices(2)
 
 # Left hand side for u equations
-a_h  = inner(grad(u), grad(v))*dx
-a_h += ( (eta('+')*k**2/h_F)*dot(jump(u),jump(v))
+a_u  = inner(grad(u), grad(v))*dx
+a_u += ( (eta('+')*k**2/h_F)*dot(jump(u),jump(v))
         - dot( avg(grad(u))*np, jump(v) )
         - dot( avg(grad(v))*np, jump(u) ) ) * dS
-a_h += ((eta*k**2/h_T)*dot(u,v)
+a_u += ( (eta*k**2/h_T)*dot(u,v)
         - dot(grad(u)*n, v)
         - dot(grad(v)*n, u) ) * ds
+a_u += dti*dot(u, v)*dx # Time derivative term
 
-# Right hand side for u equations
-ub = as_vector((0, x[0]*(1.0-x[0])))
-ub2 = as_vector((0, x[0]*(1.0-x[0])))
-ub0 = as_vector((0,0))
+# Boundary condition functions for u
+# (setting one of these to 0,0 is equivalent to
+#  removing the integral in this formulation)
+uz = as_vector((0, 0))
+ub0, ub1, ub2 = uz, uz, uz # Zero as default
+ub1 = as_vector((0, x[0]*(1.0-x[0]))) # Parabolic profile in y direction
+#ub2 = as_vector((0, x[0]*(1.0-x[0])))
+
+# Attach boundary indicators to boundary integration measure
 dsb = ds[boundaries]
-if 1:
-    b_h = (eta*k**2/h_T)*dot(ub,v)*dsb(1) \
-        + (eta*k**2/h_T)*dot(ub0,v)*dsb(0) 
-#        + (eta*k**2/h_T)*dot(ub2,v)*dsb(2)
+pen = eta * k**2 / h_T
+if 1: # FIXME: What is the right formulation for this term?
+    b_h = pen*dot(ub0,v)*dsb(0) \
+        + pen*dot(ub1,v)*dsb(1) 
+        + pen*dot(ub2,v)*dsb(2)
 else:
-    b_h = (eta*k**2/h_T)*dot(ub,n)*dot(v,n)*dsb(1) \
-        + (eta*k**2/h_T)*dot(ub0,n)*dot(v,n)*dsb(0) 
-#        + (eta*k**2/h_T)*dot(ub2,n)*dot(v,n)*dsb(2)
+    b_h = pen*dot(ub0,n)*dot(v,n)*dsb(0) \
+        + pen*dot(ub1,n)*dot(v,n)*dsb(1) \
+        + pen*dot(ub2,n)*dot(v,n)*dsb(2)
 
-b_h -= dot(grad(v)*n, ub)*dsb(1) \
-     + dot(grad(v)*n, ub0)*dsb(0) 
-#     + dot(grad(v)*n, ub2)*dsb(2)
-#b_h -= dot(f,v)*dx
-b_h -= dot(v, 2*grad(ph) - grad(php))*dx # pressure coupling
-
-# Add time derivatives to forms
-a_h += (1/dt)*dot(u, v)*dx
-b_h += (1/dt)*dot(uhp,v)*dx
-
-# Alternative formulations exposing bugs in FEniCS:
-#a_h -= ((avg(u[j].dx(i)) * nm[i]) * jump(v[j]))*dS # BUG in FFC, undefined 'direction' variable
-#a_h -= dot( avg(grad(u)) * nm, jump(v) )*dS # BUG in FFC, np works but not nm...
-#a_h -= (dot(avg(grad(u[j])), n) * jump(v[j]))*dS # BUG in UFL, mixing tensor/index notation
+b_h += dot(grad(v)*n, ub0)*dsb(0) # FIXME: Plus or minus? 
+b_h += dot(grad(v)*n, ub1)*dsb(1)
+b_h += dot(grad(v)*n, ub2)*dsb(2)
+b_h -= dot(f,v)*dx                       # Forcing term
+b_h -= dot(v, 2*grad(ph) - grad(php))*dx # Pressure coupling term
+b_h += dti*dot(uhp,v)*dx                 # Time derivative term
 
 # Pressure Poisson equation
-a_h_p = dot(grad(p),grad(q))*dx
-b_h_p  = -(1/dt)*div(uh)*q*dx
-b_h_p -= (1/dt('+'))*dot(np, jump(uh))*avg(q)*dS
-b_h_p += (1/dt)*dot(n, uh-ub)*q*dsb(1)  \
-      +  (1/dt)*dot(n, uh-ub0)*q*dsb(0) \
-      +  (1/dt)*dot(n, uh-ub2)*q*dsb(2)
+a_p = dot(grad(p),grad(q))*dx
+b_h_p  = -dti*div(uh)*q*dx
+b_h_p -= dti('+')*dot(np, jump(uh))*avg(q)*dS
+b_h_p += dti*dot(n, uh-ub0)*q*dsb(0) \
+      +  dti*dot(n, uh-ub1)*q*dsb(1) \
+      +  dti*dot(n, uh-ub2)*q*dsb(2)
 b_h_p += dot(grad(php), grad(q))*dx
 
+# BC for pressure, zero on outlet boundary
 pbc = DirichletBC(P, 0, Outlet())
 
-# Assemble matrices
-if 0:
-    u0 = as_vector(0, 0)
-    #ub.assign(project(UB(), V))
+# Setup analytical solution and corresponding forcing term
+if 0: # From testing at an earlier stage, not compatible with current problem setup
+    u0 = as_vector((0, 0))
+    ub0.assign(project(u0, V))
+    ub1.assign(project(u0, V))
+    ub2.assign(project(u0, V))
 
-    f0 = as_vector(0, 0)
-    f.assign(project(f0, V_cg))
+    f0 = as_vector((0, 0))
+    f.assign(project(f0, Vf))
 
-#f.assign(project(div(grad(as_vector(0, 0))), V_cg)) # BUG in UFL, listtensor assumption failed
+# Assemble time independent matrices
+A_u = assemble(a_u)
+A_p = assemble(a_p)
 
-A_u = assemble(a_h)
-A_p = assemble(a_h_p)
-
+# Storage of results
 times = []
 errors = []
-
+uchanges = []
 ufile = File('u.pvd')
 pfile = File('p.pvd')
 ufile << uh
@@ -185,7 +169,7 @@ t = T0
 tn = 0
 while t < T1:
     # Solve advection-diffusion equations
-    b_u = assemble(b_h) # pn, pn-1
+    b_u = assemble(b_h)
     if 0:
         solve(A_u, uh.vector(), b_u, "lu")
     else:
@@ -197,16 +181,17 @@ while t < T1:
                 'gmres': { 'restart': 100 },
                 })
 
+    # Compute error, need to have defined an analytical solution u0 for this to work
     if 0:
         ue = uh-u0
         e = sqrt(assemble(dot(ue,ue)*dx))
         #e1 = sqrt(assemble(ue[0]**2*dx))
         #e2 = sqrt(assemble(ue[1]**2*dx))
-        print "t, cells, unknowns, error, e1, e2: ", t, (2*m**2), uh.vector().size(), e #, e1, e2
+        print "t, m, unknowns, error, e1, e2: ", t, m, uh.vector().size(), e #, e1, e2
         times.append(t)
         errors.append(e)
-
-        if e < 1e-8:
+        if e < 1e-10:
+            print "Reached analytical solution, breaking out of time loop."
             break
 
     # Solve pressure equation
@@ -215,18 +200,22 @@ while t < T1:
     pbc.apply(A_p, b_p)
     solve(A_p, ph.vector(), b_p) # -> pn+1
 
+    # Compute change in u from last timestep
     uchange = assemble(dot((uh-uhp),(uh-uhp))*dx)
-    print "diff:", uchange
+
+    # Store results
+    uchanges.append(uchange)
+    print "uchange:", uchange
+    ufile << uh
+    pfile << ph
+
+    # Prepare for next iteration
     uhp.assign(uh)
     t += dtvalue
     tn += 1
 
-    ufile << uh
-    pfile << ph
-
-
-# TODO: Postprocessing
-if 1:
+# Postprocessing
+if 0:
     plot(uh, title='u')
     #plot(ue)
     plot(ph, title='p')
@@ -235,4 +224,6 @@ if 1:
 if 0:
     import pylab
     pylab.plot(times, errors)
+    pylab.plot(times, uchanges)
     pylab.show()
+
