@@ -24,8 +24,8 @@ if 1:
 d = 2
 m = int(sys.argv[1]) if len(sys.argv) == 2 else 16
 k = 1
-dtvalue = 1e-1
-steps = 200
+dtvalue = 1e-2
+steps = 20
 T0, T1 = 0.0, dtvalue*(steps+0.1)
 
 yscale = 10
@@ -52,16 +52,20 @@ boundaries.set_all(0)
 Inlet().mark(boundaries, 1)
 Outlet().mark(boundaries, 2)
 
+# Attach boundary indicators to a boundary integration measure
+dsb = ds[boundaries]
+
 # Get UFL geometric quantities
 cell = mesh.ufl_cell()
-x = cell.x
+x = cell.x # TODO: Implement the FacetNormal trick in PyDOLFIN, so we can write SpatialCoordinates(mesh)
+def SpatialCoordinates(mesh):
+    return mesh.ufl_cell().x
 n = FacetNormal(mesh)
 
 # Define function spaces
 V = VectorFunctionSpace(mesh, "DG", k)
 Vf = VectorFunctionSpace(mesh, "CG", 3)
 P = FunctionSpace(mesh, "CG", 1)
-P2 = FunctionSpace(mesh, "CG", 2)
 
 # Define functions
 uh = Function(V)
@@ -77,7 +81,15 @@ f = Function(Vf)
 dt = Constant(dtvalue, cell=cell)
 dti = 1.0 / dt
 
-# TODO: Define forms
+# Boundary condition functions for u
+# (setting one of these to 0,0 is equivalent to
+#  removing the integral in this formulation)
+uz = as_vector((0, 0))
+ub0, ub1, ub2 = uz, uz, uz # Zero as default
+ub1 = as_vector((0, x[0]*(1.0-x[0]))) # Parabolic profile in y direction
+#ub2 = as_vector((0, x[0]*(1.0-x[0])))
+
+# FIXME: Figure out how to implement this in dolfin
 h_T = CellSize(mesh)
 h_dT = FacetArea(mesh)
 h_p = h_T('+') / h_dT('+')
@@ -101,42 +113,33 @@ a_u += ( (eta*k**2/h_T)*dot(u,v)
         - dot(grad(v)*n, u) ) * ds
 a_u += dti*dot(u, v)*dx # Time derivative term
 
-# Boundary condition functions for u
-# (setting one of these to 0,0 is equivalent to
-#  removing the integral in this formulation)
-uz = as_vector((0, 0))
-ub0, ub1, ub2 = uz, uz, uz # Zero as default
-ub1 = as_vector((0, x[0]*(1.0-x[0]))) # Parabolic profile in y direction
-#ub2 = as_vector((0, x[0]*(1.0-x[0])))
-
-# Attach boundary indicators to boundary integration measure
-dsb = ds[boundaries]
-b_h = -dot(f,v)*dx                       # Forcing term
-b_h += dti*dot(uhp,v)*dx                 # Time derivative term
-b_h -= dot(v, 2*grad(ph) - grad(php))*dx # Pressure coupling term
+# Right hand side for u equations
+b_u = -dot(f,v)*dx                       # Forcing term
+b_u += dti*dot(uhp,v)*dx                 # Time derivative term
+b_u -= dot(v, 2*grad(ph) - grad(php))*dx # Pressure coupling term
 
 pen = eta * k**2 / h_T
 if 1: # FIXME: What is the right formulation for this term?
-    b_h += pen*dot(ub0,v)*dsb(0)
-    b_h += pen*dot(ub1,v)*dsb(1)
-    b_h += pen*dot(ub2,v)*dsb(2)
+    b_u += pen*dot(ub0,v)*dsb(0)
+    b_u += pen*dot(ub1,v)*dsb(1)
+    b_u += pen*dot(ub2,v)*dsb(2)
 else:
-    b_h += pen*dot(ub0,n)*dot(v,n)*dsb(0)
-    b_h += pen*dot(ub1,n)*dot(v,n)*dsb(1)
-    b_h += pen*dot(ub2,n)*dot(v,n)*dsb(2)
+    b_u += pen*dot(ub0,n)*dot(v,n)*dsb(0)
+    b_u += pen*dot(ub1,n)*dot(v,n)*dsb(1)
+    b_u += pen*dot(ub2,n)*dot(v,n)*dsb(2)
 
-b_h += dot(grad(v)*n, ub0)*dsb(0) # FIXME: Plus or minus? 
-b_h += dot(grad(v)*n, ub1)*dsb(1)
-b_h += dot(grad(v)*n, ub2)*dsb(2)
+b_u -= dot(grad(v)*n, ub0)*dsb(0)
+b_u -= dot(grad(v)*n, ub1)*dsb(1)
+b_u -= dot(grad(v)*n, ub2)*dsb(2)
 
 # Pressure Poisson equation
 a_p = dot(grad(p),grad(q))*dx
-b_h_p  = dot(grad(php), grad(q))*dx
-b_h_p -= dti*div(uh)*q*dx
-b_h_p -= dti('+')*dot(np, jump(uh))*avg(q)*dS
-b_h_p += dti*dot(n, uh-ub0)*q*dsb(0)
-b_h_p += dti*dot(n, uh-ub1)*q*dsb(1)
-b_h_p += dti*dot(n, uh-ub2)*q*dsb(2)
+b_p  = dot(grad(php), grad(q))*dx
+b_p -= dti*div(uh)*q*dx
+b_p -= dti('+')*dot(np, jump(uh))*avg(q)*dS
+b_p += dti*dot(n, uh-ub0)*q*dsb(0)
+b_p += dti*dot(n, uh-ub1)*q*dsb(1)
+b_p += dti*dot(n, uh-ub2)*q*dsb(2)
 
 # BC for pressure, zero on outlet boundary
 pbc = DirichletBC(P, 0, Outlet())
@@ -169,11 +172,11 @@ t = T0
 tn = 0
 while t < T1:
     # Solve advection-diffusion equations
-    b_u = assemble(b_h)
+    bh_u = assemble(b_u)
     if 0:
-        solve(A_u, uh.vector(), b_u, "lu")
+        solve(A_u, uh.vector(), bh_u, "lu")
     else:
-        solve(A_u, uh.vector(), b_u,
+        solve(A_u, uh.vector(), bh_u,
               "gmres",
               solver_parameters={
                 'relative_tolerance': 1e-15,
@@ -196,9 +199,9 @@ while t < T1:
 
     # Solve pressure equation
     php.assign(ph)
-    b_p = assemble(b_h_p)
-    pbc.apply(A_p, b_p)
-    solve(A_p, ph.vector(), b_p) # -> pn+1
+    bh_p = assemble(b_p)
+    pbc.apply(A_p, bh_p)
+    solve(A_p, ph.vector(), bh_p) # -> pn+1
 
     # Compute change in u from last timestep
     uchange = assemble(dot((uh-uhp),(uh-uhp))*dx)
