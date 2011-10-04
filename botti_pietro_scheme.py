@@ -48,7 +48,8 @@ class Outlet(SubDomain):
         return x[1] > (yscale - eps) and on_boundary
 
 boundaries = MeshFunction("uint", mesh, d-1)
-boundaries.set_all(0)
+boundaries.set_all(7)
+DomainBoundary().mark(boundaries, 0)
 Inlet().mark(boundaries, 1)
 Outlet().mark(boundaries, 2)
 
